@@ -289,3 +289,43 @@ def AttentionSeq2Seq(output_dim, output_length, batch_input_shape=None,
     decoded = decoder(encoded)
     model = Model(inputs, decoded)
     return model
+
+# attention e^t_i = v_t tanh(W(h^{enc}_i; h^{dec}^t} + b)
+def attention(inputs):
+    # inputs: [encoder_outputs, decoder_outputs]
+    # encoder_outputs : [batch, t, 2d], decoder_outputs :[b, k, d]
+    encoder_outputs = inputs[0]
+    decoder_outputs = inputs[1]
+    encoder_length = tf.shape(encoder_outputs)[1]
+    decoder_length = tf.shape(decoder_outputs)[1]
+    # encoder_hiddens : [b, t, 2d] -> [b, k, t, 2d]
+    # decoder_hiddens : [b, k, d] -> [b, k, t, d]
+    encoder_hiddens = tf.tile(tf.expand_dims(encoder_outputs, axis=1), [1, decoder_length, 1, 1])
+    decoder_hiddens = tf.tile(tf.expand_dims(decoder_outputs, axis=2), [1, 1, encoder_length, 1])
+    # hidden_input : [b,t,k,3d]
+    hidden_input = tf.concat([encoder_hiddens, decoder_hiddens], axis=-1)
+    # w := tanh(W[h_enc; h_dec] + b)
+    attention_hidden = tf.keras.layers.Dense(latent_dim,
+                                             activation=tf.nn.tanh,
+                                             use_bias=True)(hidden_input)
+
+    # v^t dot w
+    attention_score = tf.keras.layers.Dense(1)(attention_hidden)
+    attention_score = tf.squeeze(attention_score, axis=-1)
+
+    # attention mask
+    encoder_mask = tf.sign(tf.abs(tf.reduce_sum(encoder_outputs, axis=2)))
+    decoder_mask = tf.sign(tf.abs(tf.reduce_sum(decoder_outputs, axis=2)))
+    query_masks = tf.expand_dims(decoder_mask, 2)  #[b, k, 1]
+    query_masks = tf.tile(query_masks, [1, 1, encoder_length])  # [b, k, t]
+    paddings = tf.ones_like(attention_score) * (-2 ** 32 + 1)
+
+    attention_score = tf.where(tf.equal(query_masks, 0), paddings, attention_score)
+    attention_score = tf.nn.softmax(attention_score, axis=-1)
+    key_mask = tf.expand_dims(encoder_mask, 1)  # [b, t, 1]
+    attention_score *= key_mask
+
+    # [b, k , t] dot [b, t, 2d]
+    context_vectors = tf.matmul(attention_score, encoder_outputs)
+    augmented_outputs = tf.concat([decoder_outputs, context_vectors], axis=-1)
+    return augmented_outputs
